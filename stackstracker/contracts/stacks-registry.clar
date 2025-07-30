@@ -1,5 +1,6 @@
-;; StacksTracker Registry Contract 
-;; Enhanced registry with admin system and versioning
+;; StacksTracker Registry Contract
+;; Central registry for contract management and access control
+;; StacksTracker ecosystem for Bitcoin L2 portfolio tracking
 
 ;; Constants
 (define-constant CONTRACT_OWNER tx-sender)
@@ -7,11 +8,12 @@
 (define-constant ERR_CONTRACT_NOT_FOUND (err u101))
 (define-constant ERR_CONTRACT_ALREADY_EXISTS (err u102))
 (define-constant ERR_INVALID_CONTRACT_NAME (err u103))
+(define-constant ERR_INVALID_PRINCIPAL (err u104))
 (define-constant ERR_ADMIN_NOT_FOUND (err u105))
 (define-constant ERR_ALREADY_ADMIN (err u106))
 
 ;; Data Variables
-(define-data-var contract-version (string-ascii 10) "0.5.0")
+(define-data-var contract-version (string-ascii 10) "1.0.0")
 (define-data-var registry-paused bool false)
 
 ;; Data Maps
@@ -33,8 +35,7 @@
     {
         granted-at: uint,
         granted-by: principal,
-        can-update: bool,
-        can-manage-admins: bool
+        permissions: uint ;; Bitfield for different permission types
     }
 )
 
@@ -47,6 +48,25 @@
         is-active: bool
     }
 )
+
+;; Contract interaction logs for audit purposes
+(define-map interaction-logs
+    uint
+    {
+        contract-name: (string-ascii 64),
+        caller: principal,
+        action: (string-ascii 32),
+        timestamp: uint
+    }
+)
+
+(define-data-var log-index uint u0)
+
+;; Permission constants (bitfield values)
+(define-constant PERMISSION_READ u1)
+(define-constant PERMISSION_WRITE u2)
+(define-constant PERMISSION_ADMIN u4)
+(define-constant PERMISSION_ALL u7) ;; 1+2+4
 
 ;; Private Functions
 (define-private (is-contract-owner)
@@ -61,28 +81,33 @@
 )
 
 (define-private (is-contract-admin (contract-name (string-ascii 64)) (user principal))
-    (is-some (map-get? contract-admins {contract-name: contract-name, admin: user}))
+    (match (map-get? contract-admins {contract-name: contract-name, admin: user})
+        admin-data (> (get permissions admin-data) u0)
+        false
+    )
 )
 
-(define-private (can-update-contract (contract-name (string-ascii 64)) (user principal))
+(define-private (has-permission (contract-name (string-ascii 64)) (user principal) (required-permission uint))
     (or 
         (is-contract-owner)
         (is-global-admin user)
         (match (map-get? contract-admins {contract-name: contract-name, admin: user})
-            admin-data (get can-update admin-data)
+            admin-data (> (bit-and (get permissions admin-data) required-permission) u0)
             false
         )
     )
 )
 
-(define-private (can-manage-admins (contract-name (string-ascii 64)) (user principal))
-    (or 
-        (is-contract-owner)
-        (is-global-admin user)
-        (match (map-get? contract-admins {contract-name: contract-name, admin: user})
-            admin-data (get can-manage-admins admin-data)
-            false
-        )
+(define-private (log-interaction (contract-name (string-ascii 64)) (action (string-ascii 32)))
+    (let ((current-index (var-get log-index)))
+        (map-set interaction-logs current-index {
+            contract-name: contract-name,
+            caller: tx-sender,
+            action: action,
+            timestamp: block-height
+        })
+        (var-set log-index (+ current-index u1))
+        (ok true)
     )
 )
 
@@ -135,10 +160,11 @@
         (map-set contract-admins {contract-name: name, admin: tx-sender} {
             granted-at: block-height,
             granted-by: tx-sender,
-            can-update: true,
-            can-manage-admins: true
+            permissions: PERMISSION_ALL
         })
         
+        ;; Log the action
+        (unwrap-panic (log-interaction name "register"))
         (ok true)
     )
 )
@@ -152,7 +178,7 @@
 )
     (begin
         (asserts! (not (var-get registry-paused)) ERR_UNAUTHORIZED)
-        (asserts! (can-update-contract name tx-sender) ERR_UNAUTHORIZED)
+        (asserts! (has-permission name tx-sender PERMISSION_ADMIN) ERR_UNAUTHORIZED)
         
         (match (map-get? registered-contracts name)
             contract-data 
@@ -164,6 +190,7 @@
                     version: new-version,
                     description: new-description
                 })
+                (unwrap-panic (log-interaction name "update"))
                 (ok true)
             )
             ERR_CONTRACT_NOT_FOUND
@@ -174,12 +201,13 @@
 ;; Activate or deactivate a contract
 (define-public (set-contract-status (name (string-ascii 64)) (active bool))
     (begin
-        (asserts! (can-manage-admins name tx-sender) ERR_UNAUTHORIZED)
+        (asserts! (has-permission name tx-sender PERMISSION_ADMIN) ERR_UNAUTHORIZED)
         
         (match (map-get? registered-contracts name)
             contract-data
             (begin
                 (map-set registered-contracts name (merge contract-data {is-active: active}))
+                (unwrap-panic (log-interaction name (if active "activate" "deactivate")))
                 (ok true)
             )
             ERR_CONTRACT_NOT_FOUND
@@ -191,20 +219,20 @@
 (define-public (grant-contract-admin 
     (contract-name (string-ascii 64)) 
     (admin principal) 
-    (can-update bool)
-    (can-manage-admins bool)
+    (permissions uint)
 )
     (begin
-        (asserts! (can-manage-admins contract-name tx-sender) ERR_UNAUTHORIZED)
+        (asserts! (has-permission contract-name tx-sender PERMISSION_ADMIN) ERR_UNAUTHORIZED)
         (asserts! (is-some (map-get? registered-contracts contract-name)) ERR_CONTRACT_NOT_FOUND)
+        (asserts! (<= permissions PERMISSION_ALL) ERR_UNAUTHORIZED)
         
         (map-set contract-admins {contract-name: contract-name, admin: admin} {
             granted-at: block-height,
             granted-by: tx-sender,
-            can-update: can-update,
-            can-manage-admins: can-manage-admins
+            permissions: permissions
         })
         
+        (unwrap-panic (log-interaction contract-name "grant-admin"))
         (ok true)
     )
 )
@@ -215,10 +243,11 @@
     (admin principal)
 )
     (begin
-        (asserts! (can-manage-admins contract-name tx-sender) ERR_UNAUTHORIZED)
+        (asserts! (has-permission contract-name tx-sender PERMISSION_ADMIN) ERR_UNAUTHORIZED)
         (asserts! (is-some (map-get? contract-admins {contract-name: contract-name, admin: admin})) ERR_ADMIN_NOT_FOUND)
         
         (map-delete contract-admins {contract-name: contract-name, admin: admin})
+        (unwrap-panic (log-interaction contract-name "revoke-admin"))
         (ok true)
     )
 )
@@ -283,6 +312,15 @@
     (map-get? registered-contracts name)
 )
 
+;; Check if a user has specific permission for a contract
+(define-read-only (check-permission 
+    (contract-name (string-ascii 64)) 
+    (user principal) 
+    (permission uint)
+)
+    (has-permission contract-name user permission)
+)
+
 ;; Get contract admin details
 (define-read-only (get-contract-admin-details 
     (contract-name (string-ascii 64)) 
@@ -301,8 +339,14 @@
     {
         version: (var-get contract-version),
         paused: (var-get registry-paused),
-        owner: CONTRACT_OWNER
+        owner: CONTRACT_OWNER,
+        total-logs: (var-get log-index)
     }
+)
+
+;; Get interaction log by index
+(define-read-only (get-interaction-log (index uint))
+    (map-get? interaction-logs index)
 )
 
 ;; Verify contract exists and is active
@@ -311,4 +355,14 @@
         contract-data (get is-active contract-data)
         false
     )
+)
+
+;; Get all permission levels
+(define-read-only (get-permission-levels)
+    {
+        read: PERMISSION_READ,
+        write: PERMISSION_WRITE,
+        admin: PERMISSION_ADMIN,
+        all: PERMISSION_ALL
+    }
 )
