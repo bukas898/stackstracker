@@ -1,6 +1,6 @@
 ;; StacksTracker Registry Contract
 ;; Central registry for contract management and access control
-;; StacksTracker ecosystem for Bitcoin L2 portfolio tracking
+;; Part of the StacksTracker ecosystem for Bitcoin L2 portfolio tracking
 
 ;; Constants
 (define-constant CONTRACT_OWNER tx-sender)
@@ -62,11 +62,11 @@
 
 (define-data-var log-index uint u0)
 
-;; Permission constants (bitfield values)
+;; Permission constants (individual permissions)
 (define-constant PERMISSION_READ u1)
 (define-constant PERMISSION_WRITE u2)
-(define-constant PERMISSION_ADMIN u4)
-(define-constant PERMISSION_ALL u7) ;; 1+2+4
+(define-constant PERMISSION_ADMIN u3)
+(define-constant PERMISSION_ALL u3) ;; Admin includes all permissions
 
 ;; Private Functions
 (define-private (is-contract-owner)
@@ -92,7 +92,7 @@
         (is-contract-owner)
         (is-global-admin user)
         (match (map-get? contract-admins {contract-name: contract-name, admin: user})
-            admin-data (> (bit-and (get permissions admin-data) required-permission) u0)
+            admin-data (>= (get permissions admin-data) required-permission)
             false
         )
     )
