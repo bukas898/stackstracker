@@ -8,8 +8,9 @@ requirements = []
 [contracts.stacks-registry]
 path = 'contracts/stacks-registry.clar'
 
-[contracts.user-registry.clar]
+[contracts.user-registry]
 path = 'contracts/user-registry.clar'
+
 clarity_version = 2
 epoch = 2.1
 [repl.analysis]
