@@ -1,5 +1,6 @@
 ;; StacksTracker User Registry Contract
 ;; User profile management and Bitcoin address verification
+;; Part of the StacksTracker ecosystem for Bitcoin L2 portfolio tracking
 
 ;; Constants
 (define-constant CONTRACT_OWNER tx-sender)
@@ -16,8 +17,8 @@
 (define-constant ERR_BTC_ADDRESS_NOT_FOUND (err u210))
 (define-constant ERR_VERIFICATION_FAILED (err u211))
 
-;; Contract references
-(define-constant REGISTRY_CONTRACT .stacks-registry)
+;; Contract references - will be integrated in later versions
+;; (define-constant REGISTRY_CONTRACT .stacks-registry)
 
 ;; Data Variables
 (define-data-var contract-version (string-ascii 10) "1.0.0")
@@ -107,7 +108,9 @@
 )
 
 (define-private (is-registry-admin)
-    (contract-call? REGISTRY_CONTRACT check-permission "user-registry" tx-sender u4) ;; PERMISSION_ADMIN
+    ;; For Level 2: simplified admin check - only contract owner
+    ;; Will be enhanced with registry integration in Level 3
+    (is-contract-owner)
 )
 
 (define-private (validate-username (username (string-utf8 50)))
@@ -385,11 +388,9 @@
     (increment-count uint)
 )
     (begin
-        ;; Only allow calls from registered contracts
-        (asserts! (or 
-            (is-registry-admin)
-            (contract-call? REGISTRY_CONTRACT is-contract-active "portfolio-manager")
-        ) ERR_UNAUTHORIZED)
+        ;; Level 2: Basic authorization - only contract owner or registry admin
+        ;; Will be enhanced with full contract integration in Level 3
+        (asserts! (is-registry-admin) ERR_UNAUTHORIZED)
         
         (match (map-get? user-activity user)
             current-activity
