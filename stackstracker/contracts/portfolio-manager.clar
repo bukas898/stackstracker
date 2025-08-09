@@ -1,5 +1,5 @@
-;; StacksTracker Portfolio Manager Contract (Stage 2 - Enhanced Features)
-;; Enhanced portfolio tracking with analytics, permissions, and extended asset support
+;; StacksTracker Portfolio Manager Contract (Basic Version)
+;; Basic portfolio tracking and asset management
 
 ;; Constants
 (define-constant CONTRACT_OWNER tx-sender)
@@ -11,7 +11,13 @@
 (define-constant ERR_HOLDING_NOT_FOUND (err u305))
 (define-constant ERR_INVALID_ASSET_TYPE (err u306))
 (define-constant ERR_INVALID_QUANTITY (err u307))
+(define-constant ERR_USER_NOT_REGISTERED (err u308))
+(define-constant ERR_REGISTRY_ERROR (err u309))
 (define-constant ERR_PORTFOLIO_LIMIT_REACHED (err u310))
+
+;; Contract references - will be integrated in later versions
+;; (define-constant REGISTRY_CONTRACT .stacks-registry)
+;; (define-constant USER_REGISTRY_CONTRACT .user-registry)
 
 ;; Asset type constants
 (define-constant ASSET_TYPE_BTC "btc")
@@ -23,17 +29,18 @@
 (define-constant VISIBILITY_PUBLIC u1)
 (define-constant VISIBILITY_FRIENDS u2)
 
-;; Portfolio limits
+;; Subscription limits
 (define-constant FREE_TIER_PORTFOLIO_LIMIT u3)
 (define-constant PRO_TIER_PORTFOLIO_LIMIT u20)
+(define-constant ENTERPRISE_TIER_PORTFOLIO_LIMIT u100)
 
 ;; Data Variables
-(define-data-var contract-version (string-ascii 10) "0.2.0")
+(define-data-var contract-version (string-ascii 10) "1.0.0")
 (define-data-var total-portfolios uint u0)
 (define-data-var total-holdings uint u0)
 
 ;; Data Maps
-;; Enhanced portfolio registry
+;; Main portfolio registry
 (define-map user-portfolios 
     {user: principal, portfolio-id: uint}
     {
@@ -43,7 +50,7 @@
         created-at: uint,
         updated-at: uint,
         total-holdings: uint,
-        total-value-usd: uint,
+        total-value-usd: uint, ;; Cached value in cents (multiply by 100)
         is-active: bool
     }
 )
@@ -54,15 +61,15 @@
     uint
 )
 
-;; Enhanced portfolio holdings with cost basis
+;; Portfolio holdings
 (define-map portfolio-holdings 
     {user: principal, portfolio-id: uint, holding-id: uint}
     {
         asset-type: (string-ascii 20),
-        asset-id: (string-ascii 100),
-        asset-symbol: (string-ascii 10),
-        quantity: uint,
-        cost-basis-usd: uint,
+        asset-id: (string-ascii 100), ;; Contract address for tokens, "bitcoin" for BTC, "stacks" for STX
+        asset-symbol: (string-ascii 10), ;; BTC, STX, ALEX, etc.
+        quantity: uint, ;; Amount in smallest unit (satoshis, ustx, etc.)
+        cost-basis-usd: uint, ;; Cost basis in USD cents
         acquired-at: uint,
         updated-at: uint,
         notes: (optional (string-utf8 200))
@@ -75,38 +82,44 @@
     uint
 )
 
-;; Portfolio sharing permissions
+;; Portfolio sharing and permissions
 (define-map portfolio-permissions 
     {owner: principal, portfolio-id: uint, viewer: principal}
     {
-        permission-level: uint,
+        permission-level: uint, ;; 1=view, 2=edit
         granted-at: uint,
         granted-by: principal
     }
 )
 
-;; Portfolio analytics cache
+;; Portfolio analytics cache (basic)
 (define-map portfolio-analytics 
     {user: principal, portfolio-id: uint}
     {
         last-calculated: uint,
-        total-invested-usd: uint,
-        current-value-usd: uint,
-        unrealized-pnl-usd: int,
+        total-invested-usd: uint, ;; Total cost basis in cents
+        current-value-usd: uint, ;; Current value in cents
+        unrealized-pnl-usd: int, ;; Profit/Loss in cents (can be negative)
         total-transactions: uint,
-        performance-24h: int
+        performance-24h: int ;; Percentage change in basis points (100 = 1%)
     }
-)
-
-;; User subscription tiers (simplified)
-(define-map user-subscription-tier 
-    principal 
-    uint
 )
 
 ;; Private Functions
 (define-private (is-contract-owner)
     (is-eq tx-sender CONTRACT_OWNER)
+)
+
+(define-private (is-registry-admin)
+    ;; For Level 2: simplified admin check - only contract owner
+    ;; Will be enhanced with registry integration in Level 3
+    (is-contract-owner)
+)
+
+(define-private (is-user-registered (user principal))
+    ;; For Level 2: simplified check - assume all users are registered
+    ;; Will be enhanced with user-registry integration in Level 3
+    true
 )
 
 (define-private (validate-portfolio-name (name (string-utf8 100)))
@@ -129,12 +142,9 @@
 )
 
 (define-private (get-user-portfolio-limit (user principal))
-    (let ((tier (default-to u0 (map-get? user-subscription-tier user))))
-        (if (is-eq tier u1)
-            PRO_TIER_PORTFOLIO_LIMIT
-            FREE_TIER_PORTFOLIO_LIMIT
-        )
-    )
+    ;; For Level 2: simplified limits - everyone gets free tier
+    ;; Will be enhanced with user-registry integration in Level 3
+    FREE_TIER_PORTFOLIO_LIMIT
 )
 
 (define-private (can-create-portfolio (user principal))
@@ -150,8 +160,8 @@
 
 (define-private (can-access-portfolio (owner principal) (portfolio-id uint) (viewer principal))
     (or 
-        (is-eq owner viewer)
-        (is-contract-owner)
+        (is-eq owner viewer) ;; Owner can always access
+        (is-registry-admin) ;; Admins can access
         (match (map-get? user-portfolios {user: owner, portfolio-id: portfolio-id})
             portfolio-data 
             (or 
@@ -177,32 +187,6 @@
     )
 )
 
-(define-private (update-portfolio-analytics (user principal) (portfolio-id uint) (cost-basis uint))
-    (let ((analytics-key {user: user, portfolio-id: portfolio-id}))
-        (match (map-get? portfolio-analytics analytics-key)
-            existing-analytics
-            (map-set portfolio-analytics analytics-key
-                (merge existing-analytics {
-                    total-invested-usd: (+ (get total-invested-usd existing-analytics) cost-basis),
-                    total-transactions: (+ (get total-transactions existing-analytics) u1),
-                    last-calculated: block-height
-                })
-            )
-            (map-set portfolio-analytics analytics-key
-                {
-                    last-calculated: block-height,
-                    total-invested-usd: cost-basis,
-                    current-value-usd: u0,
-                    unrealized-pnl-usd: 0,
-                    total-transactions: u1,
-                    performance-24h: 0
-                }
-            )
-        )
-        (ok true)
-    )
-)
-
 ;; Public Functions
 
 ;; Create a new portfolio
@@ -214,6 +198,7 @@
     (let ((portfolio-id (+ (default-to u0 (map-get? user-portfolio-count tx-sender)) u1)))
         (begin
             ;; Validate inputs
+            (asserts! (is-user-registered tx-sender) ERR_USER_NOT_REGISTERED)
             (asserts! (validate-portfolio-name name) ERR_INVALID_PORTFOLIO_NAME)
             (asserts! (validate-visibility visibility) ERR_INVALID_VISIBILITY)
             (asserts! (can-create-portfolio tx-sender) ERR_PORTFOLIO_LIMIT_REACHED)
@@ -233,12 +218,27 @@
                 }
             )
             
-            ;; Initialize analytics
-            (unwrap-panic (update-portfolio-analytics tx-sender portfolio-id u0))
+            ;; Initialize portfolio analytics
+            (map-set portfolio-analytics 
+                {user: tx-sender, portfolio-id: portfolio-id}
+                {
+                    last-calculated: block-height,
+                    total-invested-usd: u0,
+                    current-value-usd: u0,
+                    unrealized-pnl-usd: 0,
+                    total-transactions: u0,
+                    performance-24h: 0
+                }
+            )
             
             ;; Update counters
             (unwrap-panic (increment-user-portfolio-count tx-sender))
             (var-set total-portfolios (+ (var-get total-portfolios) u1))
+            
+            ;; Update user activity - Level 2: simplified (no cross-contract call)
+            ;; Will be enhanced with user-registry integration in Level 3
+            ;; (unwrap-panic (contract-call? USER_REGISTRY_CONTRACT update-user-activity 
+            ;;     tx-sender "portfolio" u1))
             
             (ok portfolio-id)
         )
@@ -288,7 +288,7 @@
 )
 
 ;; Add or update a holding in portfolio
-(define-public (add-holding 
+(define-public (update-holding 
     (portfolio-id uint)
     (asset-type (string-ascii 20))
     (asset-id (string-ascii 100))
@@ -305,7 +305,7 @@
             (asserts! (validate-asset-type asset-type) ERR_INVALID_ASSET_TYPE)
             (asserts! (> quantity u0) ERR_INVALID_QUANTITY)
             
-            ;; Create holding
+            ;; Create or update holding
             (map-set portfolio-holdings 
                 {user: tx-sender, portfolio-id: portfolio-id, holding-id: holding-id}
                 {
@@ -332,12 +332,14 @@
                 false
             )
             
-            ;; Update analytics
-            (unwrap-panic (update-portfolio-analytics tx-sender portfolio-id cost-basis-usd))
-            
             ;; Update counters
             (unwrap-panic (increment-portfolio-holding-count tx-sender portfolio-id))
             (var-set total-holdings (+ (var-get total-holdings) u1))
+            
+            ;; Update user activity - Level 2: simplified (no cross-contract call)
+            ;; Will be enhanced with user-registry integration in Level 3
+            ;; (unwrap-panic (contract-call? USER_REGISTRY_CONTRACT update-user-activity 
+            ;;     tx-sender "portfolio" u1))
             
             (ok holding-id)
         )
@@ -373,6 +375,7 @@
                 false
             )
             
+            ;; Update counter
             (var-set total-holdings (if (> (var-get total-holdings) u0)
                 (- (var-get total-holdings) u1)
                 u0
@@ -391,7 +394,7 @@
 )
     (begin
         (asserts! (portfolio-exists tx-sender portfolio-id) ERR_PORTFOLIO_NOT_FOUND)
-        (asserts! (<= permission-level u2) ERR_UNAUTHORIZED)
+        (asserts! (<= permission-level u2) ERR_UNAUTHORIZED) ;; 1=view, 2=edit
         
         (map-set portfolio-permissions 
             {owner: tx-sender, portfolio-id: portfolio-id, viewer: viewer}
@@ -421,16 +424,7 @@
     )
 )
 
-;; Set user subscription tier (admin only)
-(define-public (set-user-subscription-tier (user principal) (tier uint))
-    (begin
-        (asserts! (is-contract-owner) ERR_UNAUTHORIZED)
-        (map-set user-subscription-tier user tier)
-        (ok true)
-    )
-)
-
-;; Deactivate portfolio
+;; Deactivate portfolio (soft delete)
 (define-public (deactivate-portfolio (portfolio-id uint))
     (let ((portfolio-key {user: tx-sender, portfolio-id: portfolio-id}))
         (match (map-get? user-portfolios portfolio-key)
@@ -459,7 +453,15 @@
     )
 )
 
-;; Get holding details
+;; Get portfolio holdings
+(define-read-only (get-portfolio-holdings (user principal) (portfolio-id uint))
+    (if (can-access-portfolio user portfolio-id tx-sender)
+        (ok "holdings-list") ;; Placeholder - would need iteration in real implementation
+        ERR_UNAUTHORIZED
+    )
+)
+
+;; Get specific holding details
 (define-read-only (get-holding-details 
     (user principal) 
     (portfolio-id uint) 
@@ -526,6 +528,7 @@
 (define-read-only (get-subscription-limits)
     {
         free: FREE_TIER_PORTFOLIO_LIMIT,
-        pro: PRO_TIER_PORTFOLIO_LIMIT
+        pro: PRO_TIER_PORTFOLIO_LIMIT,
+        enterprise: ENTERPRISE_TIER_PORTFOLIO_LIMIT
     }
 )
